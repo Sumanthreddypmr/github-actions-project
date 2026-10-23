@@ -1,0 +1,81 @@
+
+name: Java Maven Build and Tomcat Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Job
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Build Maven Application
+        run: mvn clean package
+
+      - name: Store Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: java-app
+          path: target/*.war
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    name: Deploy Job
+    runs-on: ubuntu-latest
+    needs: build
+    environment: production
+
+    steps:
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Download Build Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: java-app
+          path: deploy
+
+      - name: Deploy WAR to Tomcat
+        env:
+          TOMCAT_HOST: ${{ secrets.TOMCAT_HOST }}
+          TOMCAT_USER: ${{ secrets.TOMCAT_USER }}
+          TOMCAT_PASSWORD: ${{ secrets.TOMCAT_PASSWORD }}
+        run: |
+          set -e
+
+          WAR_FILE=$(find deploy -maxdepth 1 -name '*.war' -print -quit)
+
+          if [ -z "$WAR_FILE" ]; then
+            echo "ERROR: WAR file not found"
+            exit 1
+          fi
+
+          echo "Deploying $WAR_FILE to Tomcat..."
+
+          curl --fail --show-error \
+            --user "$TOMCAT_USER:$TOMCAT_PASSWORD" \
+            --upload-file "$WAR_FILE" \
+            "http://${TOMCAT_HOST}:8080/manager/text/deploy?path=/myapp&update=true"
+
+          echo "Deployment completed successfully!"
