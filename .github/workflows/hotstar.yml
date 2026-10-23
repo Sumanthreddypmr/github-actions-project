@@ -1,11 +1,14 @@
 
-name: Simple CI-CD Pipeline
+name: Java Maven CI-CD
 
 on:
   push:
     branches:
       - main
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -16,20 +19,73 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Build Application
-        run: |
-          echo "Starting build..."
-          echo "Building application..."
-          echo "Build completed successfully!"
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Build Maven Application
+        run: mvn clean package
+
+      - name: Store Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: java-app
+          path: target/*.war
+          if-no-files-found: error
+          retention-days: 7
 
   deploy:
     name: Deploy Job
     runs-on: ubuntu-latest
     needs: build
 
+    environment:
+      name: production
+
     steps:
-      - name: Deploy Application
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: java-app
+          path: deploy
+
+      - name: Deploy to Tomcat
+        env:
+          TOMCAT_HOST: ${{ secrets.TOMCAT_HOST }}
+          TOMCAT_USER: ${{ secrets.TOMCAT_USER }}
+          TOMCAT_PASSWORD: ${{ secrets.TOMCAT_PASSWORD }}
         run: |
-          echo "Starting deployment..."
-          echo "Deploying application..."
+          set -euo pipefail
+
+          : "${TOMCAT_HOST:?Missing TOMCAT_HOST secret}"
+          : "${TOMCAT_USER:?Missing TOMCAT_USER secret}"
+          : "${TOMCAT_PASSWORD:?Missing TOMCAT_PASSWORD secret}"
+
+          WAR_FILE=$(find deploy -maxdepth 1 -type f -name '*.war' -print -quit)
+
+          if [ -z "$WAR_FILE" ]; then
+            echo "ERROR: WAR file not found"
+            exit 1
+          fi
+
+          RESPONSE=$(mktemp)
+          trap 'rm -f "$RESPONSE"' EXIT
+
+          HTTP_CODE=$(curl -sS \
+            -o "$RESPONSE" \
+            -w '%{http_code}' \
+            --user "$TOMCAT_USER:$TOMCAT_PASSWORD" \
+            --upload-file "$WAR_FILE" \
+            "http://${TOMCAT_HOST}:8080/manager/text/deploy?path=/myapp&update=true")
+
+          cat "$RESPONSE"
+
+          if [ "$HTTP_CODE" != "200" ] || ! grep -q '^OK' "$RESPONSE"; then
+            echo "ERROR: Tomcat deployment failed (HTTP $HTTP_CODE)"
+            exit 1
+          fi
+
           echo "Deployment completed successfully!"
